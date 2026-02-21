@@ -1,3 +1,5 @@
+import config from "../public/icons/config.json";
+
 export default function handler(req, res) {
   const element = req.query.element || "wood";
 
@@ -11,63 +13,36 @@ export default function handler(req, res) {
     `${today.getFullYear()}${month}${day}`
   );
 
-  // 🔥 특별한 날 (연도 무시)
+  const BASE_URL = "https://lunari-server.vercel.app";
+
+  // 🔥 연도 무시 특별한 날
   const specialDays = ["1-1", "12-25"];
 
-  // 🔥 이미지 풀 (이름 지정 안함)
-  const imagePool = {
-    wood: {
-      normal: [
-        "/icons/wood/1.png",
-        "/icons/wood/2.png",
-        "/icons/wood/3.png",
-        "/icons/wood/4.png"
-      ],
-      special: [
-        "/icons/wood/special1.png",
-        "/icons/wood/special2.png"
-      ]
-    },
-    fire: {
-      normal: ["/icons/fire/1.png"],
-      special: []
-    },
-    earth: {
-      normal: ["/icons/earth/1.png"],
-      special: []
-    },
-    metal: {
-      normal: ["/icons/metal/1.png"],
-      special: []
-    },
-    water: {
-      normal: ["/icons/water/1.png"],
-      special: []
-    }
-  };
+  const count = config[element];
 
-  const elementData = imagePool[element];
-
-  if (!elementData) {
+  if (!count) {
     return res.status(400).json({ error: "Invalid element" });
   }
 
-  // 🔥 특별날이면 special 풀 사용
-  if (specialDays.includes(monthDay) && elementData.special.length > 0) {
-    const index = seed % elementData.special.length;
+  // 🔥 특별날 처리
+  if (specialDays.includes(monthDay)) {
+    // special 폴더 안에도 숫자형 파일로 관리한다고 가정
+    const specialCount = 3; // 예: special 3개 있다면
+    const specialIndex = (seed % specialCount) + 1;
+
     return res.status(200).json({
       element,
       type: "special",
-      imageUrl: elementData.special[index]
+      imageUrl: `${BASE_URL}/icons/${element}/special${specialIndex}.png`
     });
   }
 
-  // 🔥 일반 순환 (중복 없이 순환)
-  const index = seed % elementData.normal.length;
+  // 🔥 일반 이미지 순환
+  const index = (seed % count) + 1;
 
   return res.status(200).json({
     element,
     type: "normal",
-    imageUrl: elementData.normal[index]
+    imageUrl: `${BASE_URL}/icons/${element}/${index}.png`
   });
 }
