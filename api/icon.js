@@ -1,4 +1,7 @@
-import config from "../public/icons/config.json";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const config = require("../public/icons/config.json");
 
 export default function handler(req, res) {
   const element = req.query.element || "wood";

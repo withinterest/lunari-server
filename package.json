@@ -1,0 +1,16 @@
+{
+  "name": "lunari-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
+    "googleapis": "182.0.0"
+  }
+}
