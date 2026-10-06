@@ -1,8 +1,20 @@
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method Not Allowed" });
+    return res.status(405).json({
+      ok: false,
+      code: "METHOD_NOT_ALLOWED",
+    });
   }
 
+  // LUNARI 1.0 intentionally disables automatic AI fortune generation.
+  // A future opt-in version must add authentication, rate limits, usage
+  // controls, request validation, and output limits before enabling AI.
+  return res.status(410).json({
+    ok: false,
+    code: "AI_FORTUNE_DISABLED",
+  });
+
+  /* c8 ignore start -- retained 1.1 draft is unreachable in LUNARI 1.0. */
   try {
     const { engineResult } = req.body;
 
@@ -122,4 +134,5 @@ ${JSON.stringify(expert)}
       detail: error.message,
     });
   }
+  /* c8 ignore stop */
 }
