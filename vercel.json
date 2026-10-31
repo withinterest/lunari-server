@@ -1,3 +1,9 @@
 {
-  "cleanUrls": true
+  "cleanUrls": true,
+  "installCommand": "npx --yes pnpm@10.11.0 install --frozen-lockfile && npm ci --prefix tools/purchase-direct-runtime --ignore-scripts --omit=dev --no-audit --no-fund",
+  "functions": {
+    "api/qa/wallet/me.js": {
+      "includeFiles": "tools/purchase-direct-runtime/**"
+    }
+  }
 }

@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+const root=new URL('../',import.meta.url);
+const config=JSON.parse(await readFile(new URL('vercel.json',root)));
+const pkg=JSON.parse(await readFile(new URL('package.json',root)));
+const lock=await readFile(new URL('pnpm-lock.yaml',root),'utf8');
+const driver=JSON.parse(await readFile(new URL('tools/purchase-direct-runtime/package.json',root)));
+const driverLock=JSON.parse(await readFile(new URL('tools/purchase-direct-runtime/package-lock.json',root)));
+test('existing routing and function defaults unchanged',()=>{assert.equal(config.cleanUrls,true);assert.deepEqual(Object.keys(config).sort(),['cleanUrls','functions','installCommand']);assert.deepEqual(Object.keys(config.functions),['api/qa/wallet/me.js']);});
+test('locked root install must succeed before isolated driver install',()=>{assert.equal(config.installCommand,'npx --yes pnpm@10.11.0 install --frozen-lockfile && npm ci --prefix tools/purchase-direct-runtime --ignore-scripts --omit=dev --no-audit --no-fund');assert.equal((config.installCommand.match(/&&/g)||[]).length,1);});
+test('driver and lock pin exact reviewed version',()=>{assert.equal(driver.dependencies.pg,'8.23.1');assert.equal(driverLock.packages[''].dependencies.pg,'8.23.1');assert.equal(driverLock.packages['node_modules/pg'].version,'8.23.1');assert(driverLock.packages['node_modules/pg'].integrity.startsWith('sha512-'));});
+test('root package dependency specifiers match pnpm importer',()=>{const importer=lock.split('\npackages:')[0];assert.match(lock,/lockfileVersion: '9.0'/);for(const [name,spec] of Object.entries(pkg.dependencies)){const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');assert.match(importer,new RegExp("(?:'"+esc(name)+"'|"+esc(name)+"):\\s*\\n\\s+specifier: "+esc(spec)+'(?:\\r?\\n|$)'));}});
+test('only QA function receives isolated driver files',()=>{assert.deepEqual(config.functions['api/qa/wallet/me.js'],{includeFiles:'tools/purchase-direct-runtime/**'});assert(!('api/google-play/verify.js'in config.functions));assert(!('api/wallet/me.js'in config.functions));});
+test('runtime keeps build-installed file paths and integrity checks, never installs',async()=>{const source=await readFile(new URL('lib/purchase-direct-tls.js',root),'utf8');assert(source.includes('../tools/purchase-direct-runtime/node_modules/pg/'));assert(source.includes('PURCHASE_PG_SOURCE_INTEGRITY'));assert(source.includes("pkg.version!=='8.23.1'"));assert(!/child_process|execFile|spawn\(|npm ci|pnpm install/.test(source));});
