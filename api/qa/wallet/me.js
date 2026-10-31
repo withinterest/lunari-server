@@ -8,7 +8,15 @@ export function createQaWalletHandler({env=process.env,verifyToken=qaFirebaseVer
  try{const c=qaReadConfiguration(env);
  if(req.method!=='GET'){res.setHeader('Allow','GET');return res.status(405).json({ok:false,code:'METHOD_NOT_ALLOWED'});}
  if(req.headers?.host!==c.origin.host||(env.VERCEL?req.headers?.['x-forwarded-proto']!=='https':req.socket?.encrypted!==true))throw new WalletAuthError('QA_HTTPS_REQUIRED',403);
- if(Object.keys(req.query??{}).length||new URL(req.url??'/','https://qa.invalid').search||req.body!=null&&req.body!=='')throw new WalletAuthError('CLIENT_ACCOUNT_SELECTOR_FORBIDDEN',400);
+ const queryBlocked=Object.keys(req.query??{}).length>0;
+ const urlHasQuery=!!new URL(req.url??'/','https://qa.invalid').search;
+ const body=req.body,bodyEmpty=body===null||body===undefined||body==='';
+ if(queryBlocked||urlHasQuery||!bodyEmpty){
+  const bodyType=body===null?'null':Buffer.isBuffer(body)?'buffer':Array.isArray(body)?'array':typeof body;
+  // Fixed shape/type labels only. Never log request objects, keys or values.
+  try{logger.warn(JSON.stringify({queryBlocked,urlHasQuery,bodyType,bodyEmpty}));}catch{/* Diagnostics cannot bypass rejection. */}
+  throw new WalletAuthError('CLIENT_ACCOUNT_SELECTOR_FORBIDDEN',400);
+ }
  const ip=env.VERCEL?req.headers?.['x-vercel-forwarded-for']:req.socket?.remoteAddress;if(typeof ip!=='string'||!ip.length||ip.length>128||!limit('ip:'+ip,60))throw new WalletAuthError('QA_RATE_LIMITED',429);
  const h=req.headers?.authorization;if(typeof h!=='string'||h.length>16384||!/^Bearer [^\s]+$/.test(h))throw new WalletAuthError('AUTH_REQUIRED',401);
  const {uid}=await verifyToken(h.slice(7));if(!c.allowed.has(uid))throw new WalletAuthError('QA_ACCOUNT_NOT_ALLOWED',403);
