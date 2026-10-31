@@ -34,7 +34,7 @@ test('valid Preview host still requires HTTPS',async()=>{const req=previewReques
 
 // Environment diagnostics must contain fixed names only, never values.
 import {logQaReadEnvironmentFailure} from '../lib/qa-wallet-v2-reader.js';
-const dangerousNames=['NODE_TLS_REJECT_UNAUTHORIZED','NODE_OPTIONS','NODE_EXTRA_CA_CERTS','SSLKEYLOGFILE','PGOPTIONS','PGSERVICE','PGSERVICEFILE','PGHOST','PGPASSWORD','PGPASSFILE','NODE_USE_ENV_PROXY','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'];
+const dangerousNames=['NODE_TLS_REJECT_UNAUTHORIZED','NODE_OPTIONS','NODE_EXTRA_CA_CERTS','SSLKEYLOGFILE','PGOPTIONS','PGSERVICE','PGSERVICEFILE','PGPASSFILE','NODE_USE_ENV_PROXY','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'];
 for(const name of dangerousNames)test('diagnostic identifies blocked variable without its value '+name,async()=>{const logs=[];const r=previewResponse();const sentinel='PUBLIC_SENSITIVE_SENTINEL_NOT_A_REAL_SECRET';await createQaWalletHandler({env:{...previewEnv,[name]:sentinel},logger:{warn:(...args)=>logs.push(args)},verifyToken:()=>assert.fail('No auth'),readWallet:()=>assert.fail('No DB')})(previewRequest(),r);assert.equal(r.statusCode,503);assert.deepEqual(r.body,{ok:false,code:'QA_READ_ENVIRONMENT_REFUSED'});assert.deepEqual(logs,[[JSON.stringify({condition:'RISKY_ENVIRONMENT_VARIABLE_PRESENT',blockedVariables:[name]})]]);assert(!JSON.stringify(logs).includes(sentinel));assert(!JSON.stringify(r.body).includes(name));});
 for(const [change,condition,names] of [[{VERCEL:'not-1'},'VERCEL_PREVIEW_REQUIRED',['VERCEL']],[{VERCEL_ENV:'production'},'VERCEL_PREVIEW_REQUIRED',['VERCEL_ENV']],[{VERCEL:'bad',VERCEL_ENV:'bad'},'VERCEL_PREVIEW_REQUIRED',['VERCEL','VERCEL_ENV']],[{VERCEL:undefined,NODE_ENV:'production'},'LOCAL_NODE_ENV_REQUIRED',['VERCEL','NODE_ENV']]])test('diagnostic identifies environment gate '+names.join(','),async()=>{const logs=[],r=previewResponse();await createQaWalletHandler({env:{...previewEnv,...change},logger:{warn:x=>logs.push(JSON.parse(x))},readWallet:()=>assert.fail('No DB')})(previewRequest(),r);assert.deepEqual(logs,[{condition,blockedVariables:names}]);assert.deepEqual(r.body,{ok:false,code:'QA_READ_ENVIRONMENT_REFUSED'});});
 test('multiple dangerous variables are reported by name only',async()=>{const logs=[],r=previewResponse();await createQaWalletHandler({env:{...previewEnv,NODE_OPTIONS:'PUBLIC_MOCK_VALUE_A',HTTPS_PROXY:'PUBLIC_MOCK_VALUE_B'},logger:{warn:x=>logs.push(JSON.parse(x))}})(previewRequest(),r);assert.deepEqual(logs,[{condition:'RISKY_ENVIRONMENT_VARIABLE_PRESENT',blockedVariables:['NODE_OPTIONS','HTTPS_PROXY']}]);assert.equal(r.statusCode,503);});
@@ -42,3 +42,39 @@ test('logger failure cannot bypass denial or alter public error',async()=>{const
 test('unannotated errors cannot inject diagnostic content into logger',()=>{const log={warn(){assert.fail('Must not log arbitrary errors');}};logQaReadEnvironmentFailure(Object.assign(Error('PUBLIC_MOCK_ERROR'),{condition:'injected',blockedVariables:['injected']}),log);});
 test('successful authenticated response does not produce environment diagnostics',async()=>{const r=previewResponse();await createQaWalletHandler({env:previewEnv,logger:{warn(){assert.fail('No warning');}},verifyToken:async()=>({uid:'qa-fixture-user'}),readWallet:async uid=>({ok:true,userUid:uid,source:'qa-wallet-v2'})})(previewRequest(),r);assert.equal(r.statusCode,200);});
 test('environment diagnostics do not become enumerable error properties',()=>{let error;try{qaReadConfiguration({...previewEnv,NODE_OPTIONS:'PUBLIC_MOCK_VALUE'});}catch(e){error=e;}assert(error);assert.deepEqual(Object.keys(error).sort(),['code','status']);assert(!JSON.stringify(error).includes('NODE_OPTIONS'));});
+
+// Legacy integration variables may coexist, but must never supply QA credentials.
+import {loadStrictPgClient} from '../lib/purchase-direct-tls.js';
+const inheritedPg={PGHOST:'legacy-wrong-host.invalid',PGPASSWORD:'PUBLIC_WRONG_LEGACY_FIXTURE'};
+test('legacy PGHOST/PGPASSWORD presence does not reject pinned QA URLs',()=>{const c=qaReadConfiguration({...previewEnv,...inheritedPg});for(const [kind,role] of [['issuer','lunari_wallet_v2_issuer_sql_qa'],['executor','lunari_wallet_v2_exec_sql_qa']]){assert.equal(c.urls[kind].host,qaHost);assert.equal(decodeURIComponent(c.urls[kind].username),role);assert.notEqual(decodeURIComponent(c.urls[kind].password),inheritedPg.PGPASSWORD);}});
+for(const name of ['WALLET_V2_QA_READ_ISSUER_DATABASE_URL','WALLET_V2_QA_READ_EXECUTOR_DATABASE_URL'])test('missing explicit QA URL cannot fall back to inherited variables '+name,()=>assert.throws(()=>qaReadConfiguration({...previewEnv,...inheritedPg,[name]:undefined}),e=>e.code==='QA_READ_DATABASE_CONFIGURATION'));
+for(const name of ['WALLET_V2_QA_READ_ISSUER_DATABASE_URL','WALLET_V2_QA_READ_EXECUTOR_DATABASE_URL'])test('wrong explicit QA host cannot fall back '+name,()=>assert.throws(()=>qaReadConfiguration({...previewEnv,...inheritedPg,[name]:previewEnv[name].replace(qaHost,'wrong-target.invalid')}),e=>e.code==='QA_READ_DATABASE_CONFIGURATION'));
+test('real pinned pg driver ignores inherited host/password for both explicit QA roles without connecting',async()=>{
+ const saved={PGHOST:process.env.PGHOST,PGPASSWORD:process.env.PGPASSWORD};
+ try{Object.assign(process.env,inheritedPg);const c=qaReadConfiguration({...previewEnv,...inheritedPg});const Client=await loadStrictPgClient();
+ for(const [kind,role] of [['issuer','lunari_wallet_v2_issuer_sql_qa'],['executor','lunari_wallet_v2_exec_sql_qa']]){
+  const u=c.urls[kind],d=new Client({host:u.hostname,port:5432,database:'neondb',user:role,password:()=>decodeURIComponent(u.password),ssl:{rejectUnauthorized:true,minVersion:'TLSv1.2'},enableChannelBinding:true});
+  assert.equal(d.connectionParameters.host,qaHost);assert.equal(d.connectionParameters.user,role);assert.equal(d.connectionParameters.database,'neondb');assert.equal(d.connectionParameters.port,5432);assert.equal(d.connectionParameters.ssl.rejectUnauthorized,true);
+  // Exercise pg's actual callback resolution, not a replacement parser.
+  await new Promise((resolve,reject)=>{d.connection.once('error',reject);d._getPassword(resolve);});
+  assert.equal(d.password,'PUBLIC_TEST_PASSWORD');assert.notEqual(d.password,process.env.PGPASSWORD);assert.equal(d._connecting,false);assert.equal(d.connection.stream.connecting,false);
+ }
+ }finally{for(const [name,value] of Object.entries(saved))if(value===undefined)delete process.env[name];else process.env[name]=value;}
+});
+test('QA reader passes explicit credentials to the actual driver even with legacy process environment',async()=>{
+ const saved={PGHOST:process.env.PGHOST,PGPASSWORD:process.env.PGPASSWORD};let constructors=0;
+ try{Object.assign(process.env,inheritedPg);const Base=await loadStrictPgClient();class InspectOnly extends Base{
+  constructor(o){super(o);constructors++;assert.equal(o.host,qaHost);assert.equal(o.port,5432);assert.equal(o.database,'neondb');assert.equal(o.user,'lunari_wallet_v2_issuer_sql_qa');assert.equal(typeof o.password,'function');assert.equal(this.connectionParameters.host,qaHost);assert.equal(this.connectionParameters.password(),'PUBLIC_TEST_PASSWORD');assert.equal(o.enableChannelBinding,true);assert.equal(o.ssl.rejectUnauthorized,true);}
+  async connect(){throw Object.assign(Error('STOP_BEFORE_NETWORK'),{code:'LOCAL_INSPECTION_STOP'});}async end(){}
+ }
+ const {createQaBalanceReader}=await import('../lib/qa-wallet-v2-reader.js');const t={project:'round-credit-14510227',qa:'br-restless-grass-b3odflam',prod:'br-ancient-glitter-b3h67y5r',endpoint:'ep-silent-leaf-b3xp84bu',prodEndpoint:'ep-wispy-shape-b3p581us'};
+ const fetcher=async url=>{const base='https://console.neon.tech/api/v2/projects/'+t.project;let result;
+ if(url===base)result={project:{id:t.project,name:'lunari-wallet-production-check'}};
+ else if(url===base+'/branches/'+t.qa)result={branch:{id:t.qa,name:'qa-wallet-integration',project_id:t.project,parent_id:t.prod,default:false,protected:false}};
+ else if(url===base+'/branches/'+t.prod)result={branch:{id:t.prod,name:'production',project_id:t.project,default:true}};
+ else if(url===base+'/endpoints/'+t.endpoint)result={endpoint:{id:t.endpoint,project_id:t.project,branch_id:t.qa,host:qaHost,type:'read_write'}};
+ else if(url===base+'/endpoints')result={endpoints:[{id:t.endpoint,branch_id:t.qa,host:qaHost},{id:t.prodEndpoint,branch_id:t.prod,host:'production.invalid'}]};else assert.fail('Unexpected metadata route');
+ return{ok:true,json:async()=>result};};
+ await assert.rejects(createQaBalanceReader({env:{...previewEnv,...inheritedPg},fetcher,loadClient:async()=>InspectOnly})('qa-fixture-user'),e=>e.code==='LOCAL_INSPECTION_STOP');assert.equal(constructors,1);
+ }finally{for(const [name,value] of Object.entries(saved))if(value===undefined)delete process.env[name];else process.env[name]=value;}
+});
