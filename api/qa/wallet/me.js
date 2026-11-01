@@ -1,5 +1,5 @@
 import {WalletAuthError} from '../../../lib/firebase-wallet-auth.js';
-import {qaReadConfiguration,qaFirebaseVerifier,createQaBalanceReader,logQaReadEnvironmentFailure} from '../../../lib/qa-wallet-v2-reader.js';
+import {qaReadConfiguration,qaFirebaseVerifier,createQaBalanceReader,logQaReadEnvironmentFailure,logQaReadFailure} from '../../../lib/qa-wallet-v2-reader.js';
 // Separate /api/qa/wallet/me. No bootstrap, operation or payment route.
 export function createQaWalletHandler({env=process.env,verifyToken=qaFirebaseVerifier(env),readWallet=createQaBalanceReader({env}),clock=Date.now,logger=console}={}){
  const slots=new Map();let active=0,queryNamesLogged=false;
@@ -37,7 +37,7 @@ export function createQaWalletHandler({env=process.env,verifyToken=qaFirebaseVer
  if(!limit('uid:'+uid,20)||active>=4)throw new WalletAuthError('QA_RATE_LIMITED',429);active++;acquired=true;
  const wallet=await readWallet(uid);if(wallet?.userUid!==uid||wallet.source!=='qa-wallet-v2')throw new WalletAuthError('QA_READ_IDENTITY_MISMATCH',503);
  return res.status(200).json(wallet);
- }catch(e){logQaReadEnvironmentFailure(e,logger);const safe=e instanceof WalletAuthError?e:new WalletAuthError('QA_WALLET_UNAVAILABLE',503);if(safe.status===429)res.setHeader('Retry-After','60');return res.status(safe.status).json({ok:false,code:safe.code});}
+ }catch(e){logQaReadEnvironmentFailure(e,logger);const safe=e instanceof WalletAuthError?e:new WalletAuthError('QA_WALLET_UNAVAILABLE',503);if(safe.code==='QA_WALLET_UNAVAILABLE'&&env.VERCEL==='1'&&env.VERCEL_ENV==='preview')logQaReadFailure(e,logger);if(safe.status===429)res.setHeader('Retry-After','60');return res.status(safe.status).json({ok:false,code:safe.code});}
  finally{if(acquired)active--;}
  };
 }
