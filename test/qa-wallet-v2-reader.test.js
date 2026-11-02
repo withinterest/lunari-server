@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {qaReadConfiguration,qaFirebaseVerifier,createQaBalanceReader,logQaReadFailure} from '../lib/qa-wallet-v2-reader.js';
+import {qaReadConfiguration,qaFirebaseVerifier,createQaBalanceReader,logQaReadFailure,classifyQaReadOrigin} from '../lib/qa-wallet-v2-reader.js';
 import {createQaWalletHandler} from '../api/qa/wallet/me.js';
 const host='ep-silent-leaf-b3xp84bu.c-4.ap-southeast-1.aws.neon.tech';
 const roles={issuer:'lunari_wallet_v2_issuer_sql_qa',executor:'lunari_wallet_v2_exec_sql_qa'};
@@ -50,7 +50,7 @@ for(const [fault,stage,internalCode] of [
  const f=fixture(fault),logs=[],r=res();
  await make({env:previewDiagnosticEnv,readWallet:f.reader,logger:{warn:x=>logs.push(JSON.parse(x))}})(diagnosticRequest(),r);
  assert.equal(r.statusCode,503);assert.deepEqual(r.body,{ok:false,code:'QA_WALLET_UNAVAILABLE'});
- assert.equal(logs.length,1);assert.deepEqual(Object.keys(logs[0]).sort(),['diagnosticId','internalCode','stage','syscall']);assert.equal(logs[0].syscall,'unspecified');
+ assert.equal(logs.length,1);assert.deepEqual(Object.keys(logs[0]).sort(),['diagnosticId','internalCode','originCategory','stage','syscall']);assert.equal(logs[0].syscall,'unspecified');
  assert.match(logs[0].diagnosticId,/^[a-f0-9]{12}$/);assert.equal(logs[0].stage,stage);assert.equal(logs[0].internalCode,internalCode);
  const serialized=JSON.stringify(logs);
  for(const forbidden of ['PRIVATE_DIAGNOSTIC_SENTINEL','SECRET','qa-a',host,'PUBLIC_MOCK','SELECT','postgresql:'])assert(!serialized.includes(forbidden));
@@ -86,6 +86,47 @@ for(const fault of ['construction','handshake'])for(const [syscall,expected] of 
  assert.equal(logs.length,1);assert.equal(logs[0].stage,fault==='construction'?'client-construction':'connection-handshake');
  assert.equal(logs[0].internalCode,'ENOENT');assert.equal(logs[0].syscall,expected);
  assert.match(logs[0].diagnosticId,/^[a-f0-9]{12}$/);
- assert.deepEqual(Object.keys(logs[0]).sort(),['diagnosticId','internalCode','stage','syscall']);
+ assert.deepEqual(Object.keys(logs[0]).sort(),['diagnosticId','internalCode','originCategory','stage','syscall']);
  assert(!JSON.stringify(logs).includes('PRIVATE_DIAGNOSTIC_SENTINEL'));assert(!JSON.stringify(logs).includes('/private/'));
+});
+
+// All stacks below are synthetic; their locations and payloads never enter logs.
+function syntheticStack(...frames){return 'Error: PRIVATE_STACK_SENTINEL\n'+frames.map(f=>'    at '+f).join('\n');}
+const originCases=[
+ ['module loader',syntheticStack('readFileSync (node:fs:1:2)','Module._extensions..js (node:internal/modules/cjs/loader:3:4)'),'module-loader'],
+ ['TLS',syntheticStack('open (node:internal/fs/promises:1:2)','connect (node:_tls_wrap:3:4)'),'tls-runtime'],
+ ['TLS internal',syntheticStack('load (node:internal/tls/secure-context:3:4)'),'tls-runtime'],
+ ['pg',syntheticStack('connect (/private/node_modules/pg/lib/client.js:3:4)'),'pg-driver'],
+ ['dependency',syntheticStack('parse (C:\\private\\node_modules\\pg-connection-string\\index.js:3:4)'),'pg-driver'],
+ ['pnpm',syntheticStack('load (/private/node_modules/.pnpm/pg@8/node_modules/pg/lib/client.js:3:4)'),'pg-driver'],
+ ['other caller',syntheticStack('load (/private/adapter.js:3:4)'),'other'],
+ ['fs only',syntheticStack('open (node:internal/fs/promises:1:2)'),'unknown'],
+ ['observer only',syntheticStack('run (/private/lib/qa-wallet-v2-reader.js:1:2)'),'unknown'],
+ ['message not frame','Error: node:internal/modules/cjs/loader PRIVATE_STACK_SENTINEL','unknown'],
+ ['minified',syntheticStack('x (webpack:private:1:2)'),'unknown'],
+ ['misleading symbol',syntheticStack('node:_tls_wrap (/private/adapter.js:1:2)'),'other'],
+];
+for(const [name,stack,expected] of originCases)test('origin classifier '+name,()=>{
+ assert.equal(classifyQaReadOrigin({stack}),expected);
+});
+test('deepest cause provides evidence; unavailable root remains unknown',()=>{
+ const outer={stack:syntheticStack('wrap (/private/adapter.js:1:2)'),cause:{stack:syntheticStack('connect (node:_tls_wrap:1:2)')}};
+ assert.equal(classifyQaReadOrigin(outer),'tls-runtime');
+ outer.cause={};assert.equal(classifyQaReadOrigin(outer),'unknown');
+});
+test('cyclic, excessive, accessor and malformed causes fail closed',()=>{
+ const cycle={};cycle.cause=cycle;assert.equal(classifyQaReadOrigin(cycle),'unknown');
+ let chain={stack:syntheticStack('connect (node:_tls_wrap:1:2)')};for(let i=0;i<9;i++)chain={cause:chain};
+ assert.equal(classifyQaReadOrigin(chain),'unknown');
+ for(const property of ['stack','cause']){const e={};Object.defineProperty(e,property,{get(){throw Error('PRIVATE_STACK_SENTINEL');}});assert.equal(classifyQaReadOrigin(e),'unknown');}
+ assert.equal(classifyQaReadOrigin({stack:'x'.repeat(32769)}),'unknown');
+ assert.equal(classifyQaReadOrigin({cause:'PRIVATE_STACK_SENTINEL'}),'unknown');
+});
+test('origin logs expose enum only; client response is unchanged',async()=>{
+ const f=fixture('handshake', 'open'),logs=[],r=res();
+ await make({env:previewDiagnosticEnv,readWallet:f.reader,logger:{warn:x=>logs.push(JSON.parse(x))}})(diagnosticRequest(),r);
+ assert.deepEqual(r.body,{ok:false,code:'QA_WALLET_UNAVAILABLE'});
+ assert.equal(logs.length,1);assert(['module-loader','tls-runtime','pg-driver','other','unknown'].includes(logs[0].originCategory));
+ assert.deepEqual(Object.keys(logs[0]).sort(),['diagnosticId','internalCode','originCategory','stage','syscall']);
+ for(const value of ['PRIVATE_STACK_SENTINEL','PRIVATE_DIAGNOSTIC_SENTINEL','/private/','postgresql:','PUBLIC_MOCK_PASSWORD','Error:'])assert(!JSON.stringify(logs).includes(value));
 });
