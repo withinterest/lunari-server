@@ -7,7 +7,7 @@ const pkg=JSON.parse(await readFile(new URL('package.json',root)));
 const lock=await readFile(new URL('pnpm-lock.yaml',root),'utf8');
 const driver=JSON.parse(await readFile(new URL('tools/purchase-direct-runtime/package.json',root)));
 const driverLock=JSON.parse(await readFile(new URL('tools/purchase-direct-runtime/package-lock.json',root)));
-test('existing routing and function defaults unchanged',()=>{assert.equal(config.cleanUrls,true);assert.deepEqual(Object.keys(config).sort(),['cleanUrls','functions','installCommand']);assert.deepEqual(Object.keys(config.functions),['api/qa/wallet/me.js','api/qa/wallet/bootstrap.js','api/qa/wallet/checkin-reward.js']);});
+test('existing routing and function defaults unchanged',()=>{assert.equal(config.cleanUrls,true);assert.deepEqual(Object.keys(config).sort(),['cleanUrls','functions','installCommand']);assert.deepEqual(Object.keys(config.functions),['api/qa/wallet/me.js','api/qa/wallet/bootstrap.js','api/qa/wallet/checkin-reward.js','api/qa/wallet/unlock-test.js']);});
 test('locked root install must succeed before isolated driver install',()=>{assert.equal(config.installCommand,'npx --yes pnpm@10.11.0 install --frozen-lockfile && npm ci --prefix tools/purchase-direct-runtime --ignore-scripts --omit=dev --no-audit --no-fund');assert.equal((config.installCommand.match(/&&/g)||[]).length,1);});
 test('driver and lock pin exact reviewed version',()=>{assert.equal(driver.dependencies.pg,'8.23.1');assert.equal(driverLock.packages[''].dependencies.pg,'8.23.1');assert.equal(driverLock.packages['node_modules/pg'].version,'8.23.1');assert(driverLock.packages['node_modules/pg'].integrity.startsWith('sha512-'));});
 test('root package dependency specifiers match pnpm importer',()=>{const importer=lock.split('\npackages:')[0];assert.match(lock,/lockfileVersion: '9.0'/);for(const [name,spec] of Object.entries(pkg.dependencies)){const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');assert.match(importer,new RegExp("(?:'"+esc(name)+"'|"+esc(name)+"):\\s*\\n\\s+specifier: "+esc(spec)+'(?:\\r?\\n|$)'));}});
@@ -121,9 +121,11 @@ test('QA function installs the isolated pg runtime before file tracing',()=>{
  assert.equal(command,'npx --yes pnpm@10.28.0 install --frozen-lockfile --ignore-scripts && npm ci --prefix tools/purchase-direct-runtime --ignore-scripts --omit=dev --no-audit --no-fund');
  assert.equal((command.match(/&&/g)||[]).length,1);
  assert.equal((command.match(/--ignore-scripts/g)||[]).length,2);
- assert.deepEqual(Object.keys(config.functions),['api/qa/wallet/me.js','api/qa/wallet/bootstrap.js','api/qa/wallet/checkin-reward.js']);
+ assert.deepEqual(Object.keys(config.functions),['api/qa/wallet/me.js','api/qa/wallet/bootstrap.js','api/qa/wallet/checkin-reward.js','api/qa/wallet/unlock-test.js']);
 });
 
 test('QA bootstrap reuses the unchanged GET packaging configuration',()=>{assert.deepEqual(config.functions['api/qa/wallet/bootstrap.js'],config.functions['api/qa/wallet/me.js']);});
 
 test('QA checkin uses the same isolated driver packaging only',()=>assert.deepEqual(config.functions['api/qa/wallet/checkin-reward.js'],config.functions['api/qa/wallet/me.js']));
+
+test('QA unlock uses isolated driver packaging only',()=>assert.deepEqual(config.functions['api/qa/wallet/unlock-test.js'],config.functions['api/qa/wallet/me.js']));

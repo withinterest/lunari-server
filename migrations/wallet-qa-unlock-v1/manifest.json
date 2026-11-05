@@ -1,0 +1,29 @@
+{
+  "planId": "qa-unlock-free-two-v1",
+  "defaultEnabled": false,
+  "externalExecutionEnabled": false,
+  "schema": "wallet_v2_qa_test",
+  "contentId": "qa_wallet_unlock_2stars_v1",
+  "cost": 2,
+  "freeOnly": true,
+  "functions": {
+    "issue_unlock_context": {
+      "bodyHash": "85dc366daf9d50f490a1c39033663577f3af45bf4369dcb0312c82b3b6984bb1",
+      "args": "u text, p jsonb"
+    },
+    "unlock_content_2stars": {
+      "bodyHash": "f6a4a2e70b1346da83ffb56fe974a644d5973486efc0682b4e12bb8021e6b484",
+      "args": "token text, p jsonb"
+    }
+  },
+  "files": [
+    {
+      "path": "010_functions_disabled.sql",
+      "sha256": "c3e36e681d02cfd0bda39c0b6e1a846db6e54552e3ea22de4ee7dbe8ace95d94"
+    },
+    {
+      "path": "020_execute_separate_approval.sql",
+      "sha256": "cae2210edddb31dffce4dc702205351439e87cded7a07f5bd8c47e0e27658969"
+    }
+  ]
+}
