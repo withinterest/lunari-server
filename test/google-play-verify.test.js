@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { createVerifyHandler } from "../api/google-play/verify.js";
 
+const productionEnvironment = { VERCEL: "1", VERCEL_ENV: "production" };
+
 const validCredentials = JSON.stringify({
   client_email: "billing@example.invalid",
   private_key: "test-private-key",
@@ -56,6 +58,7 @@ function handlerWith(verifyPurchase, env = {}, claimPurchase = async () => succe
     verifyPurchase,
     claimPurchase,
     env: {
+      ...productionEnvironment,
       GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: validCredentials,
       DATABASE_URL: "postgresql://example.invalid/database",
       PURCHASE_TOKEN_HMAC_SECRET: "test-secret-with-at-least-32-characters",
@@ -114,7 +117,7 @@ test("missing token is rejected", async () => {
 test("missing service account environment variable is safe", async () => {
   const handler = createVerifyHandler({
     verifyPurchase: async () => assert.fail("must not call Google"),
-    env: {},
+    env: { ...productionEnvironment },
     logger: { error() {} },
   });
   const res = await invoke(handler, request({ body: validBody() }));
@@ -379,6 +382,7 @@ test("database failures never approve a grant", async () => {
     }),
     claimPurchase: async () => { throw new ClaimStorageError(); },
     env: {
+      ...productionEnvironment,
       GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: validCredentials,
       DATABASE_URL: "postgresql://secret.invalid/database",
       PURCHASE_TOKEN_HMAC_SECRET: "test-secret-with-at-least-32-characters",
@@ -458,6 +462,7 @@ test("Google not-found response is sanitized", async () => {
   const logs = [];
   const handler = createVerifyHandler({
     env: {
+      ...productionEnvironment,
       GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: validCredentials,
       DATABASE_URL: "postgresql://example.invalid/database",
       PURCHASE_TOKEN_HMAC_SECRET: "test-secret-with-at-least-32-characters",
@@ -496,3 +501,55 @@ test("Google permission and transient errors use safe codes", async () => {
   }
 });
 
+
+// Local Mock tests simulate Production explicitly; there is no NODE_ENV bypass.
+for (const [name, environment] of [
+  ['preview',{VERCEL:'1',VERCEL_ENV:'preview'}],
+  ['development',{VERCEL:'1',VERCEL_ENV:'development'}],
+  ['unknown',{VERCEL:'1',VERCEL_ENV:'staging'}],['missing-all',{}],
+  ['missing-environment',{VERCEL:'1'}],['missing-vercel',{VERCEL_ENV:'production'}],
+  ['false-vercel',{VERCEL:'0',VERCEL_ENV:'production'}],
+  ['uppercase',{VERCEL:'1',VERCEL_ENV:'PRODUCTION'}],
+  ['whitespace',{VERCEL:'1',VERCEL_ENV:'production '}],
+  ['node-test-not-a-bypass',{NODE_ENV:'test'}],
+]) test(`legacy gate rejects ${name} before request, credentials, Google and DB`,async()=>{
+  let google=0,claims=0;
+  const env=new Proxy(environment,{get(target,key){assert(['VERCEL','VERCEL_ENV'].includes(key),'No credential access');return target[key];}});
+  const handler=createVerifyHandler({env,
+    verifyPurchase:async()=>{google++;assert.fail('No Google call');},
+    claimPurchase:async()=>{claims++;assert.fail('No DB call');},
+    logger:{error(){assert.fail('No log');}}});
+  const res=await invoke(handler,{get method(){assert.fail('No request processing');},get body(){assert.fail('No body parsing');}});
+  assert.equal(res.statusCode,403);
+  assert.deepEqual(res.body,{ok:false,verified:false,grantApproved:false,code:'LEGACY_PURCHASE_ENVIRONMENT_FORBIDDEN'});
+  assert.equal(google,0);assert.equal(claims,0);
+});
+
+test('spoofed headers/body cannot turn Preview into Production',async()=>{
+  const res=await invoke(createVerifyHandler({env:{VERCEL:'1',VERCEL_ENV:'preview'},
+    verifyPurchase:async()=>assert.fail('No Google'),claimPurchase:async()=>assert.fail('No DB')}),
+    {method:'POST',body:{...validBody(),VERCEL_ENV:'production'},headers:{'x-vercel-env':'production','x-forwarded-host':'production.invalid'}});
+  assert.equal(res.statusCode,403);assert.equal(res.body.code,'LEGACY_PURCHASE_ENVIRONMENT_FORBIDDEN');
+});
+
+test('gate checks trusted environment on every request',async()=>{
+  const env={...productionEnvironment,GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:validCredentials,
+    DATABASE_URL:'postgresql://fixture.invalid/db',PURCHASE_TOKEN_HMAC_SECRET:'PUBLIC_FIXTURE_SECRET_32_CHARACTERS_LONG'};
+  let google=0,claims=0;
+  const handler=createVerifyHandler({env,logger:{error(){}},verifyPurchase:async()=>{google++;return{purchaseStateContext:{purchaseState:'PURCHASED'},productLineItem:[{productId:'lunari_stars_30'}]};},claimPurchase:async()=>{claims++;return successfulClaim();}});
+  assert.equal((await invoke(handler,request({body:validBody()}))).statusCode,200);
+  env.VERCEL_ENV='preview';assert.equal((await invoke(handler,request({body:validBody()}))).statusCode,403);
+  assert.equal(google,1);assert.equal(claims,1);
+});
+
+test('QA wallet GET keeps independent Preview gate',async()=>{
+  const {createQaWalletHandler}=await import('../api/qa/wallet/me.js');
+  const host='ep-silent-leaf-b3xp84bu.c-4.ap-southeast-1.aws.neon.tech',uid='public-fixture-account';
+  const env={VERCEL:'1',VERCEL_ENV:'preview',VERCEL_URL:'qa.example.test',WALLET_ENV:'qa',FIREBASE_PROJECT_ID:'lunari-dev',
+    WALLET_V2_QA_READ_ENABLED:'1',WALLET_V2_QA_READ_ALLOWED_UIDS:JSON.stringify([uid]),NEON_API_KEY:'PUBLIC_FIXTURE_KEY',
+    WALLET_V2_QA_READ_ISSUER_DATABASE_URL:`postgresql://lunari_wallet_v2_issuer_sql_qa:PUBLIC_FIXTURE_PASSWORD@${host}/neondb?sslmode=verify-full&channel_binding=require`,
+    WALLET_V2_QA_READ_EXECUTOR_DATABASE_URL:`postgresql://lunari_wallet_v2_exec_sql_qa:PUBLIC_FIXTURE_PASSWORD@${host}/neondb?sslmode=verify-full&channel_binding=require`};
+  let reads=0;const handler=createQaWalletHandler({env,verifyToken:async()=>({uid}),readWallet:async u=>{reads++;assert.equal(u,uid);return{ok:true,userUid:uid,source:'qa-wallet-v2'};}});
+  const res=responseRecorder();await handler({method:'GET',url:'/api/qa/wallet/me',query:{},headers:{host:'qa.example.test','x-forwarded-proto':'https','x-vercel-forwarded-for':'127.0.0.1',authorization:'Bearer PUBLIC_FIXTURE_TOKEN'}},res);
+  assert.equal(res.statusCode,200);assert.equal(reads,1);
+});

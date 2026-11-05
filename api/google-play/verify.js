@@ -158,6 +158,12 @@ export function createVerifyHandler({
   logger = console,
 } = {}) {
   return async function handler(req, res) {
+    // Legacy claim writes are Production-only. No NODE_ENV/test/header bypass.
+    // Fail before reading requests, credentials, Google APIs or claim storage.
+    if (env?.VERCEL !== "1" || env?.VERCEL_ENV !== "production") {
+      return failure(res, 403, "LEGACY_PURCHASE_ENVIRONMENT_FORBIDDEN");
+    }
+
     if (req.method !== "POST") {
       res.setHeader?.("Allow", "POST");
       return failure(res, 405, "METHOD_NOT_ALLOWED");
